@@ -90,6 +90,7 @@ jobs:
           docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" app/
           docker push --all-tags "$IMAGE"
           echo "Pushed image tag: $TAG"
+          echo "IMAGE_TAG=$TAG" >> "$GITHUB_ENV"   # 傳給後面的步驟（Job Summary 要用）
 
       - name: ECS 重新部署
         run: |
@@ -108,10 +109,27 @@ jobs:
             if curl -fsS "http://$ALB_DNS/health"; then
               echo ""
               echo "✅ 部署成功：http://$ALB_DNS/docs"
+
+              # Job Summary：把網址顯示在執行頁面最上方，不用翻 log
+              {
+                echo "## 🚀 Deploy 成功"
+                echo ""
+                echo "| 項目 | 內容 |"
+                echo "|---|---|"
+                echo "| API 文件頁 | http://$ALB_DNS/docs |"
+                echo "| 健康檢查 | http://$ALB_DNS/health |"
+                echo "| Image tag | \`$IMAGE_TAG\`（= commit ${GITHUB_SHA::7}） |"
+                echo "| 部署時間 | $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M') (UTC+8) |"
+              } >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
             echo "第 $i 次檢查失敗，15 秒後重試..."
             sleep 15
           done
           echo "❌ 健康檢查失敗，請到 CloudWatch Logs 查看容器 log"
+          {
+            echo "## ❌ 健康檢查失敗"
+            echo ""
+            echo "容器沒有在時間內回應 /health。請到 AWS Console → CloudWatch → Log groups → \`/ecs/aws-infra-lab-dev\` 查看錯誤。"
+          } >> "$GITHUB_STEP_SUMMARY"
           exit 1
