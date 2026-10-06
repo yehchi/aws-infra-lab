@@ -1,19 +1,26 @@
 # ============================================================
-# Destroy (dev) — 手動觸發，一鍵銷毀整個 dev 環境（停止計費）
+# Destroy — 手動觸發，一鍵銷毀 dev 或 prod 環境（停止計費）
 #
-# 觸發方式：GitHub → Actions → Destroy (dev) → Run workflow
-#           輸入框打 destroy 才會執行（防止誤按）
+# 觸發方式：GitHub → Actions → Destroy → Run workflow
+#           選擇環境，輸入框打 destroy 才會執行（防止誤按）
 #
-# 只會刪 dev 環境；bootstrap（state bucket、OIDC Role）不受影響
+# prod 會套用 drill.tfvars（關閉刪除保護、不留最終快照）；
+# 正式 prod 開著刪除保護時，這個 workflow 會被 AWS 拒絕，這是預期的保護機制。
+# 只會刪指定環境；bootstrap（state bucket、OIDC Role）不受影響。
 # ============================================================
 
-name: Destroy (dev)
+name: Destroy
 
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: "銷毀哪個環境"
+        type: choice
+        options: [dev, prod]
+        default: dev
       confirm:
-        description: '確認銷毀 dev 環境？請輸入 "destroy"'
+        description: '確認銷毀？請輸入 "destroy"'
         required: true
 
 permissions:
@@ -21,19 +28,21 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-dev # 跟 deploy 共用同一把鎖，避免一邊建一邊拆
+  group: infra-${{ inputs.environment }} # 與 Deploy 共用同一把鎖，避免一邊建一邊拆
   cancel-in-progress: false
 
 env:
   AWS_REGION: ap-northeast-1
-  TF_DIR: terraform/environments/dev
+  TF_DIR: terraform/environments/${{ inputs.environment }}
   TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+  TF_EXTRA_ARGS: ${{ inputs.environment == 'prod' && '-var-file=drill.tfvars' || '' }}
 
 jobs:
   destroy:
-    name: terraform destroy
+    name: terraform destroy (${{ inputs.environment }})
     if: inputs.confirm == 'destroy'
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,4 +62,4 @@ jobs:
 
       - name: terraform destroy
         working-directory: ${{ env.TF_DIR }}
-        run: terraform destroy -auto-approve -input=false -no-color
+        run: terraform destroy -auto-approve -input=false -no-color $TF_EXTRA_ARGS

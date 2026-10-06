@@ -32,3 +32,9 @@ variable "rds_instance_id" {
   description = "RDS Instance identifier"
   type        = string
 }
+
+variable "rds_connections_threshold" {
+  description = "RDS 連線數告警閾值（db.t3.micro 的 max_connections 約 80-110）"
+  type        = number
+  default     = 60
+}

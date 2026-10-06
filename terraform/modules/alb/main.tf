@@ -26,14 +26,23 @@ resource "aws_lb_target_group" "ecs" {
   vpc_id      = var.vpc_id
   target_type = "ip" # Fargate 用 ip 模式，不是 instance
 
+  # task 下線前，等進行中的請求跑完的時間（預設 300 秒）
+  # API 請求都是毫秒級，30 秒綽綽有餘；縮短可加快部署與故障替換
+  deregistration_delay = var.deregistration_delay
+
+  # Health check 只檢查「程式本身活著」（/health/live，不查資料庫）
+  # 若改查資料庫，DB 故障切換時所有 task 會同時被判定不健康而全部重建（連鎖故障）
+  #
+  # 偵測時間 ≈ interval × unhealthy_threshold
+  # 容器 image 事先 build 好、啟動只需幾秒，可以用比較緊的參數快速發現故障
   health_check {
     enabled             = true
-    path                = "/health"
+    path                = var.health_check_path
     port                = "traffic-port"
     healthy_threshold   = 2
-    unhealthy_threshold = 3
+    unhealthy_threshold = var.health_check_unhealthy_threshold
     timeout             = 5
-    interval            = 30
+    interval            = var.health_check_interval
     matcher             = "200"
   }
 

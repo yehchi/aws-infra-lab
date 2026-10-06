@@ -118,9 +118,20 @@ def row_to_dict(row) -> dict:
 
 # ----- API Endpoints -----
 
+@app.get("/health/live")
+async def liveness():
+    """存活檢查（ALB 用）：只確認程式本身能回應，不檢查資料庫
+
+    刻意不查資料庫：如果資料庫故障切換的 1-2 分鐘內這裡回錯誤，
+    ALB 會判定所有 task 不健康，ECS 就會把全部 task 砍掉重建（連鎖故障）。
+    資料庫的狀態交給 /health 與 CloudWatch 告警處理。
+    """
+    return {"status": "alive"}
+
+
 @app.get("/health")
 async def health_check():
-    """健康檢查（ALB 每 30 秒呼叫一次）"""
+    """完整健康檢查：程式 + 資料庫連線（部署驗證、監控用）"""
     try:
         pool = await get_db_pool()
         async with pool.acquire() as conn:

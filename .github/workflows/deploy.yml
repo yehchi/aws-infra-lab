@@ -1,15 +1,18 @@
 # ============================================================
-# Deploy (dev) — 合併到 main 時自動部署
+# Deploy — 部署 dev / prod
+#
+#   觸發方式：
+#     push 到 main            → 自動部署 dev
+#     手動 Run workflow       → 選 dev 或 prod；prod 可勾選「演練模式」（套用 drill.tfvars）
 #
 #   job 1 infra：terraform apply（架構有變就更新，沒變就什麼都不做）
 #   job 2 app  ：build image → push ECR → ECS 重新部署 → 健康檢查
 #
-# ⚠️ 成本提醒：如果你已經 destroy 掉環境，只要有 commit 合併進 main
-#   （且改到 terraform/、app/ 或本檔），這個 workflow 就會把整套環境建回來並開始計費。
-#   只改 README / Spec 等文件不會觸發。
+# ⚠️ 成本提醒：dev 已 destroy 的狀態下，只要合併進 main 的 commit 改到
+#   terraform/、app/ 或本檔，就會把 dev 建回來並開始計費。只改文件不會觸發。
 # ============================================================
 
-name: Deploy (dev)
+name: Deploy
 
 on:
   push:
@@ -19,30 +22,44 @@ on:
       - "terraform/modules/**"
       - "app/**"
       - ".github/workflows/deploy.yml"
-  workflow_dispatch: # 也可以在 GitHub Actions 頁面手動按按鈕觸發
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "部署到哪個環境"
+        type: choice
+        options: [dev, prod]
+        default: dev
+      drill:
+        description: "prod 演練模式（套用 drill.tfvars：關閉刪除保護，演練後可立即 destroy）"
+        type: boolean
+        default: true
 
 permissions:
   id-token: write
   contents: read
 
-# 同一時間只允許一個部署在跑，避免兩次 apply 互相打架
-concurrency:
-  group: deploy-dev
-  cancel-in-progress: false
-
 env:
+  # push 觸發時沒有 inputs，預設 dev
+  ENV_NAME: ${{ inputs.environment || 'dev' }}
   AWS_REGION: ap-northeast-1
-  TF_DIR: terraform/environments/dev
+  TF_DIR: terraform/environments/${{ inputs.environment || 'dev' }}
   TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
-  ECR_REPO: aws-infra-lab-dev-app
-  ECS_CLUSTER: aws-infra-lab-dev-cluster
-  ECS_SERVICE: aws-infra-lab-dev-app-service
-  ALB_NAME: aws-infra-lab-dev-alb
+  TF_EXTRA_ARGS: ${{ (inputs.environment == 'prod' && inputs.drill) && '-var-file=drill.tfvars' || '' }}
+  ECR_REPO: aws-infra-lab-${{ inputs.environment || 'dev' }}-app
+  ECS_CLUSTER: aws-infra-lab-${{ inputs.environment || 'dev' }}-cluster
+  ECS_SERVICE: aws-infra-lab-${{ inputs.environment || 'dev' }}-app-service
+  ALB_NAME: aws-infra-lab-${{ inputs.environment || 'dev' }}-alb
+
+# 同一個環境同一時間只允許一個部署 / 銷毀在跑，避免兩次 apply 互相打架
+concurrency:
+  group: infra-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
 
 jobs:
   infra:
-    name: Infra — terraform apply
+    name: Infra — terraform apply (${{ inputs.environment || 'dev' }})
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }} # GitHub Environment：prod 可設定「需人工核准」
     steps:
       - uses: actions/checkout@v4
 
@@ -62,12 +79,13 @@ jobs:
 
       - name: terraform apply
         working-directory: ${{ env.TF_DIR }}
-        run: terraform apply -auto-approve -input=false -no-color
+        run: terraform apply -auto-approve -input=false -no-color $TF_EXTRA_ARGS
 
   app:
-    name: App — build / push / deploy
+    name: App — build / push / deploy (${{ inputs.environment || 'dev' }})
     needs: infra # 架構建好之後才部署應用程式
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -112,7 +130,7 @@ jobs:
 
               # Job Summary：把網址顯示在執行頁面最上方，不用翻 log
               {
-                echo "## 🚀 Deploy 成功"
+                echo "## 🚀 Deploy 成功（$ENV_NAME）"
                 echo ""
                 echo "| 項目 | 內容 |"
                 echo "|---|---|"

@@ -113,3 +113,27 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu_high" {
     Name = "${var.project_name}-${var.environment}-rds-cpu-high"
   }
 }
+
+# ----- RDS 連線數告警 -----
+# 連線數接近上限時，新的請求會連不上資料庫
+# 每個 ECS task 的連線池上限 10 條，task 數量擴展時要留意總連線數
+resource "aws_cloudwatch_metric_alarm" "rds_connections_high" {
+  alarm_name          = "${var.project_name}-${var.environment}-rds-connections-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "DatabaseConnections"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = var.rds_connections_threshold
+  alarm_description   = "RDS connections > ${var.rds_connections_threshold}"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  dimensions = {
+    DBInstanceIdentifier = var.rds_instance_id
+  }
+
+  tags = {
+    Name = "${var.project_name}-${var.environment}-rds-connections-high"
+  }
+}

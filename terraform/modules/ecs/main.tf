@@ -186,18 +186,32 @@ resource "aws_ecs_task_definition" "app" {
 }
 
 # ----- ECS Service -----
-# 確保永遠有指定數量的容器在跑
+# 確保永遠至少有 min_tasks 個容器在跑，task 會自動分散到兩個 AZ 的 App 層 subnet
 resource "aws_ecs_service" "app" {
   name            = "${var.project_name}-${var.environment}-app-service"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.app.arn
-  desired_count   = 1 # dev 環境跑 1 個就好
+  desired_count   = var.min_tasks
   launch_type     = "FARGATE"
 
+  # 新 task 啟動後的寬限期：這段時間內 ALB health check 失敗不會被判定為故障
+  # 容器 image 事先 build 好、啟動只需幾秒，所以寬限期可以設得短
+  health_check_grace_period_seconds = var.health_check_grace_period
+
+  # 滾動部署：先起新版、確認健康後才停舊版，部署過程服務不中斷
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+
+  # 部署失敗自動回滾：新版 task 一直起不來（例如 image 有 bug）時，自動退回上一版
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   network_configuration {
-    subnets          = var.private_subnet_ids
+    subnets          = var.app_subnet_ids
     security_groups  = [var.ecs_sg_id]
-    assign_public_ip = false # 在 Private Subnet，透過 NAT 連外網
+    assign_public_ip = false # App 層沒有 Public IP，只能經 NAT 主動對外
   }
 
   load_balancer {
@@ -206,13 +220,45 @@ resource "aws_ecs_service" "app" {
     container_port   = 8000
   }
 
-  # 第一次部署時 ECR 還沒有 image，所以忽略 task_definition 的變更
-  # 等 CI/CD push image 後再更新
   lifecycle {
-    ignore_changes = [task_definition]
+    ignore_changes = [
+      task_definition, # 由 CI/CD 部署新版，不由 Terraform 管
+      desired_count,   # 由 Auto Scaling 調整，不由 Terraform 管
+    ]
   }
 
   tags = {
     Name = "${var.project_name}-${var.environment}-app-service"
+  }
+}
+
+# ============================================================
+# Auto Scaling：依 CPU 使用率自動增減 task 數量
+# 對應結算日負載 3-5 倍的情境：尖峰自動擴展、離峰自動縮回
+# ============================================================
+
+resource "aws_appautoscaling_target" "ecs" {
+  service_namespace  = "ecs"
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.app.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  min_capacity       = var.min_tasks
+  max_capacity       = var.max_tasks
+}
+
+resource "aws_appautoscaling_policy" "ecs_cpu" {
+  name               = "${var.project_name}-${var.environment}-cpu-target-tracking"
+  policy_type        = "TargetTrackingScaling"
+  service_namespace  = aws_appautoscaling_target.ecs.service_namespace
+  resource_id        = aws_appautoscaling_target.ecs.resource_id
+  scalable_dimension = aws_appautoscaling_target.ecs.scalable_dimension
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+
+    target_value       = var.cpu_target_percent # 平均 CPU 維持在這個數字附近
+    scale_out_cooldown = 60                     # 擴展反應要快
+    scale_in_cooldown  = 180                    # 縮減要保守，避免來回震盪
   }
 }
