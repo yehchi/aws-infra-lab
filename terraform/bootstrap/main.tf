@@ -112,8 +112,10 @@ resource "aws_iam_role" "github_actions" {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
+          # GitHub 新 repo 的身份格式含不可變 ID：repo:<owner>@<owner_id>/<repo>@<repo_id>:...
+          # 用 ID 而非名稱比對，即使 repo 被刪除、有人建立同名 repo，也拿不到這個 Role
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:*"
+            "token.actions.githubusercontent.com:sub" = "${var.github_oidc_sub_prefix}:*"
           }
         }
       }

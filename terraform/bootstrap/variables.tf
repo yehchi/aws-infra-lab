@@ -10,8 +10,12 @@ variable "project_name" {
   default     = "aws-infra-lab"
 }
 
-variable "github_repo" {
-  description = "允許使用 OIDC Role 的 GitHub repo（格式：owner/repo）"
+variable "github_oidc_sub_prefix" {
+  description = <<-EOT
+    GitHub OIDC token 的 sub claim 前綴（不可變 ID 格式）。
+    查詢方式：GET https://api.github.com/repos/<owner>/<repo>/actions/oidc/customization/sub
+    回傳的 sub_claim_prefix 欄位即為此值。
+  EOT
   type        = string
-  default     = "yehchi/aws-infra-lab"
+  default     = "repo:yehchi@105764099/aws-infra-lab@1405500914"
 }
