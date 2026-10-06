@@ -71,7 +71,7 @@ resource "aws_db_instance" "main" {
   publicly_accessible    = false # 不對外，只有 ECS 能連
 
   # 備份設定
-  backup_retention_period = 7     # 保留 7 天備份
+  backup_retention_period = 7             # 保留 7 天備份
   backup_window           = "03:00-04:00" # UTC 凌晨 3 點（台灣早上 11 點）
   maintenance_window      = "Mon:04:00-Mon:05:00"
 

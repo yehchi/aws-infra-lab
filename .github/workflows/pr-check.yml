@@ -1,0 +1,73 @@
+# ============================================================
+# PR Check — 開 Pull Request 時自動執行，不會改動任何 AWS 資源
+#
+#   app-check：Python lint + Docker build（確認程式能打包）
+#   terraform-plan：格式檢查 + 語法驗證 + plan（讓 reviewer 看到「合併後會改什麼」）
+#
+# 全部通過 + 人工 review 之後才合併到 main
+# ============================================================
+
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write # OIDC：向 AWS 換取臨時憑證
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  TF_DIR: terraform/environments/dev
+  TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+
+jobs:
+  app-check:
+    name: App — lint & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check app/
+
+      - name: Docker build（只 build 不 push）
+        run: docker build -t trade-api:pr-check app/
+
+  terraform-plan:
+    name: Terraform — fmt / validate / plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.4
+
+      - name: terraform fmt（格式檢查）
+        run: terraform fmt -check -recursive terraform/
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true # public repo 的 log 人人看得到，遮蔽 account id
+
+      - name: terraform init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: terraform validate（語法驗證）
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform validate
+
+      - name: terraform plan（預覽變更，不會真的執行）
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform plan -input=false -lock=false -no-color

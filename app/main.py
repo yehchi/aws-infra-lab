@@ -4,15 +4,13 @@
 # ============================================================
 
 import os
-import json
 import uuid
 from datetime import datetime
-from decimal import Decimal
 from typing import Optional
 
+import asyncpg
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
-import asyncpg
 
 # ----- App 設定 -----
 app = FastAPI(
