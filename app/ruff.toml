@@ -1,0 +1,7 @@
+# Python lint 規則（CI 的 pr-check 會跑 ruff check）
+# E：pycodestyle 基本錯誤、F：pyflakes（未使用的 import / 變數等）、I：import 排序
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = ["E", "F", "I"]

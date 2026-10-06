@@ -1,0 +1,117 @@
+# ============================================================
+# Deploy (dev) — 合併到 main 時自動部署
+#
+#   job 1 infra：terraform apply（架構有變就更新，沒變就什麼都不做）
+#   job 2 app  ：build image → push ECR → ECS 重新部署 → 健康檢查
+#
+# ⚠️ 成本提醒：如果你已經 destroy 掉環境，只要有 commit 合併進 main
+#   （且改到 terraform/、app/ 或本檔），這個 workflow 就會把整套環境建回來並開始計費。
+#   只改 README / Spec 等文件不會觸發。
+# ============================================================
+
+name: Deploy (dev)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/environments/**"
+      - "terraform/modules/**"
+      - "app/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch: # 也可以在 GitHub Actions 頁面手動按按鈕觸發
+
+permissions:
+  id-token: write
+  contents: read
+
+# 同一時間只允許一個部署在跑，避免兩次 apply 互相打架
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-1
+  TF_DIR: terraform/environments/dev
+  TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+  ECR_REPO: aws-infra-lab-dev-app
+  ECS_CLUSTER: aws-infra-lab-dev-cluster
+  ECS_SERVICE: aws-infra-lab-dev-app-service
+  ALB_NAME: aws-infra-lab-dev-alb
+
+jobs:
+  infra:
+    name: Infra — terraform apply
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: terraform init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -input=false -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: terraform apply
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -auto-approve -input=false -no-color
+
+  app:
+    name: App — build / push / deploy
+    needs: infra # 架構建好之後才部署應用程式
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: 登入 ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & push image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPO"
+          TAG="${GITHUB_SHA::7}"   # 用 commit hash 前 7 碼當版本號，可追溯是哪一版 code
+          docker build -t "$IMAGE:$TAG" -t "$IMAGE:latest" app/
+          docker push --all-tags "$IMAGE"
+          echo "Pushed image tag: $TAG"
+
+      - name: ECS 重新部署
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --force-new-deployment > /dev/null
+          echo "等待 ECS service 穩定（最多約 10 分鐘）..."
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      - name: 健康檢查 /health
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers --names "$ALB_NAME" \
+            --query "LoadBalancers[0].DNSName" --output text)
+          for i in $(seq 1 10); do
+            if curl -fsS "http://$ALB_DNS/health"; then
+              echo ""
+              echo "✅ 部署成功：http://$ALB_DNS/docs"
+              exit 0
+            fi
+            echo "第 $i 次檢查失敗，15 秒後重試..."
+            sleep 15
+          done
+          echo "❌ 健康檢查失敗，請到 CloudWatch Logs 查看容器 log"
+          exit 1

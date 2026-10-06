@@ -126,8 +126,8 @@ resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project_name}-${var.environment}-app"
   network_mode             = "awsvpc" # Fargate 必須用 awsvpc
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"  # 0.25 vCPU
-  memory                   = "512"  # 512 MB
+  cpu                      = "256" # 0.25 vCPU
+  memory                   = "512" # 512 MB
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 

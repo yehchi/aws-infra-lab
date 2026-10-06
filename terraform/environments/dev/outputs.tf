@@ -57,3 +57,8 @@ output "ecs_cluster_name" {
   description = "ECS Cluster 名稱"
   value       = module.ecs.cluster_name
 }
+
+output "ecs_service_name" {
+  description = "ECS Service 名稱"
+  value       = module.ecs.service_name
+}

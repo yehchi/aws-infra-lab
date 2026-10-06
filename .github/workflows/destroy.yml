@@ -1,0 +1,56 @@
+# ============================================================
+# Destroy (dev) — 手動觸發，一鍵銷毀整個 dev 環境（停止計費）
+#
+# 觸發方式：GitHub → Actions → Destroy (dev) → Run workflow
+#           輸入框打 destroy 才會執行（防止誤按）
+#
+# 只會刪 dev 環境；bootstrap（state bucket、OIDC Role）不受影響
+# ============================================================
+
+name: Destroy (dev)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: '確認銷毀 dev 環境？請輸入 "destroy"'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-dev # 跟 deploy 共用同一把鎖，避免一邊建一邊拆
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-1
+  TF_DIR: terraform/environments/dev
+  TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+
+jobs:
+  destroy:
+    name: terraform destroy
+    if: inputs.confirm == 'destroy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: terraform init
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform init -input=false -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: terraform destroy
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform destroy -auto-approve -input=false -no-color
