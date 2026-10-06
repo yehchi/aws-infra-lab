@@ -135,26 +135,23 @@ IaC 工具有三個主要選項，每個都有代價：
                             |
                     terraform apply
                             |
-    ┌───────────────────────────────────────────────┐
-    │                    VPC                        │
-    │                                               │
-    │  ┌─────────────────────────────────────────┐  │
-    │  │          Public Subnet (x2 AZ)          │  │
-    │  │                                         │  │
-    │  │              [ ALB ]                    │  │
-    │  └──────────────────┬──────────────────────┘  │
-    │                     │                         │
-    │  ┌──────────────────▼──────────────────────┐  │
-    │  │         Private Subnet (x2 AZ)          │  │
-    │  │                                         │  │
-    │  │   [ ECS Fargate ] ──────► [ RDS ]      │  │
-    │  │    (API Service)         (PostgreSQL)   │  │
-    │  └─────────────────────────────────────────┘  │
-    │                                               │
-    └───────────────────────────────────────────────┘
+    ┌──────────────────── VPC（跨 2 AZ）────────────────────┐
+    │                                                       │
+    │  Public 層    [ ALB ]            [ NAT ]              │
+    │                  │                  ▲                 │
+    │                  ▼ :8000            │ 對外連線         │
+    │  App 層       [ ECS Fargate ] ──────┘                 │
+    │               （Auto Scaling）                         │
+    │                  │ :5432                              │
+    │                  ▼                                    │
+    │  Database 層  [ RDS PostgreSQL ]  ← 無任何對外路由     │
+    │                                                       │
+    └───────────────────────────────────────────────────────┘
                             │
               [ Secrets Manager ]  [ CloudWatch ]
                   (DB 連線資訊)      (Logs + Alarm)
+
+完整架構圖（AWS 官方圖示）：docs/architecture.drawio
 ```
 
 ### 5.2 架構設計決策與商業理由（對應客戶痛點）
@@ -163,11 +160,11 @@ IaC 工具有三個主要選項，每個都有代價：
 |---|---|---|---|
 | 環境不一致、手動部署耗時三週 | Terraform IaC | 卓越營運 | 一份 code 建出完全相同的 dev/staging/prod，消除環境差異，部署從週級縮短到分鐘級 |
 | 測試環境長期佔用硬體成本 | Terraform apply/destroy 生命週期 | 成本最佳化 | 測試環境用完即銷毀，不再需要長期養一台測試機 |
-| DB 密碼寫死在 config、無 audit log | Secrets Manager + IAM Role | 安全性 | 密碼集中管理、自動輪換、所有存取都有 log，稽核時直接拉報表 |
-| 資料庫與應用同網段、無隔離 | VPC + Public/Private Subnet | 安全性 | 資料庫放 Private Subnet，外部完全碰不到，符合金管會網路隔離要求 |
-| 單機房無備援、空調故障停機 4 小時 | Multi-AZ 部署（ALB + ECS + RDS） | 可靠性 | 跨兩個 AZ，單一機房級故障服務不中斷 |
+| DB 密碼寫死在 config、無 audit log | Secrets Manager + IAM Role | 安全性 | 密碼由 Terraform 自動產生、集中管理，所有存取都有 log，稽核時直接拉報表 |
+| 資料庫與應用同網段、無隔離 | VPC 三層式子網路（Public / App / Database） | 安全性 | 資料庫獨立一層、route table 沒有任何對外路由，外部碰不到、資料也送不出去，符合金管會網路隔離要求 |
+| 單機房無備援、空調故障停機 4 小時 | prod：Multi-AZ 部署（ALB + 2 個以上 ECS task + RDS Multi-AZ + 每 AZ 一台 NAT Gateway） | 可靠性 | 跨兩個 AZ，單一機房級故障服務不中斷；dev 為省成本採單 AZ 元件 |
 | 備份沒做過 DR 演練 | Terraform destroy + apply | 可靠性 | 整個環境從零重建只要幾分鐘，DR 不再是紙上談兵 |
-| 結算日負載 3-5 倍但硬體規格固定 | ECS Fargate 自動擴展 | 效能效率 | 按任務數計費，尖峰自動擴展、離峰自動縮減，成本跟負載對齊 |
+| 結算日負載 3-5 倍但硬體規格固定 | ECS Service Auto Scaling（Target Tracking，CPU 50%） | 效能效率 | 按任務數計費，尖峰自動擴展（prod 2 → 4 task）、離峰自動縮減，成本跟負載對齊 |
 | 伺服器保固到期需大筆資本支出 | 雲端 OpEx 模型 | 成本最佳化 | 從一次性大額資本支出變成按月營運費用，現金流更好預測 |
 | 3 位工程師 80% 時間花在硬體維運 | Fargate + Managed Services | 卓越營運 | 不需管 OS patch、硬碟更換，工程師時間釋放到架構改善 |
 | 基礎架構變更無審查流程 | GitHub PR + Actions CI/CD | 安全性 + 卓越營運 | 變更走 code review 流程，誰改了什麼、為什麼改，全部有紀錄 |
@@ -180,12 +177,13 @@ IaC 工具有三個主要選項，每個都有代價：
 |---|---|---|
 | **VPC** | 網路隔離的基礎 | 建立獨立網段，不使用 default VPC，展示對網路規劃的掌握 |
 | **Public Subnet（跨 2 個 AZ）** | 放置 ALB | 跨 AZ 是為了高可用性；ALB 需要對外接受流量故置於公有網段 |
-| **Private Subnet（跨 2 個 AZ）** | 放置 ECS Fargate 與 RDS | 應用程式與資料庫不應直接暴露於網際網路，僅能透過 ALB 存取 |
+| **App Subnet（跨 2 個 AZ）** | 放置 ECS Fargate | 應用程式不直接暴露於網際網路，僅能透過 ALB 存取；可經 NAT 主動對外（拉 image、呼叫 AWS API） |
+| **Database Subnet（跨 2 個 AZ）** | 放置 RDS | route table 不設任何對外路由；即使應用層被入侵，資料庫網段也沒有路徑能把資料送出 VPC |
 | **ALB（Application Load Balancer）** | 對外流量入口、健康檢查 | 提供單一進入點、支援健康檢查與後續水平擴展 |
 | **ECS Fargate** | 執行容器化的 API 服務 | 選擇 Fargate 而非 EC2 模式，免除管理底層主機；相較 EKS 學習曲線較平緩且無控制平面費用 |
 | **RDS PostgreSQL** | 資料儲存 | 對應客戶 Oracle → PostgreSQL 的遷移需求，為後續 DMS 遷移演練鋪路 |
 | **IAM Role** | 服務間權限控管 | 使用 Role 而非硬編 access key，落實最小權限原則 |
-| **Secrets Manager** | 存放資料庫連線資訊 | 避免將帳密寫入程式碼或環境變數，支援自動輪換，符合企業資安政策 |
+| **Secrets Manager** | 存放資料庫連線資訊 | 避免將帳密寫入程式碼或環境變數；密碼由 Terraform 自動產生，符合企業資安政策 |
 | **CloudWatch** | 日誌收集與告警 | AWS 原生整合、基本功能免費，不需額外建 monitoring 基礎架構 |
 | **Security Group** | 網路層存取控制 | 明確定義：ALB 僅開 80/443、ECS 僅接受來自 ALB 的流量、RDS 僅接受來自 ECS 的 5432 |
 
@@ -196,7 +194,8 @@ IaC 工具有三個主要選項，每個都有代價：
 **第一層：網路隔離層**
 
 - VPC 建立獨立網段，不使用 default VPC
-- Public Subnet 僅放 ALB（對外入口），Private Subnet 放 ECS 和 RDS（不暴露公網）
+- 三層式子網路：Public（ALB、NAT）→ App（ECS）→ Database（RDS），Database 層沒有任何對外路由
+- ALB health check 只檢查程式存活（/health/live，不查資料庫），避免資料庫切換時所有 task 被判定不健康而連鎖重啟
 - Security Group 明確定義存取規則：ALB 僅開 80/443、ECS 僅接受來自 ALB 的流量、RDS 僅接受來自 ECS 的 5432
 - 對應金融業合規的網路分層隔離要求
 
@@ -208,7 +207,7 @@ IaC 工具有三個主要選項，每個都有代價：
 
 **第三層：認證與密鑰管理層**
 
-- Secrets Manager 集中管理資料庫連線資訊，支援自動輪換
+- Secrets Manager 集中管理資料庫連線資訊，密碼由 Terraform 自動產生（自動輪換列為後續強化項目）
 - 認證資訊不進程式碼、不進環境變數，應用服務啟動時動態讀取
 - 所有存取行為都有 audit log，稽核時可直接拉報表
 - 標準流程：認證資訊寫入 Secrets Manager → 以 Secret 形式注入容器 → 應用服務啟動時讀取
@@ -267,23 +266,38 @@ Commit Message 採用 Conventional Commits 規範，格式為 `type(scope): desc
 
 ```
 terraform/
-├── modules/           # 共用模組（VPC、ECS、RDS 等）
-│   ├── vpc/
-│   ├── ecs/
-│   ├── rds/
-│   └── ...
+├── bootstrap/            # 建一次、不 destroy：State bucket（S3）、GitHub OIDC Role
+├── modules/              # 共用模組：vpc / security_groups / alb / ecs / rds / cloudwatch
 └── environments/
-    ├── dev/           # 開發環境 — 較低規格、成本優先
-    │   ├── main.tf    # 呼叫 modules，傳入 dev 參數
-    │   ├── variables.tf
-    │   └── dev.tfvars
-    └── prod/          # 正式環境 — 較高規格、可靠性優先
-        ├── main.tf    # 呼叫相同 modules，傳入 prod 參數
+    ├── dev/              # 開發環境 — 成本優先
+    │   ├── main.tf       # 呼叫 modules（dev / prod 內容完全相同）
+    │   ├── variables.tf  #（dev / prod 內容完全相同）
+    │   ├── terraform.tfvars   # ← dev 的參數：唯一的差異來源
+    │   └── backend.tf    # state 存在 S3 的 dev/
+    └── prod/             # 正式環境 — 可用性優先
+        ├── main.tf
         ├── variables.tf
-        └── prod.tfvars
+        ├── terraform.tfvars   # ← prod 的參數
+        ├── drill.tfvars       # 高可用演練專用：關閉刪除保護，演練後可立即 destroy
+        └── backend.tf    # state 存在 S3 的 prod/
 ```
 
-核心原則：**同一份 module，不同參數建出不同環境。** 例如 dev 用 `db.t3.micro`，prod 用 `db.t3.medium`；dev 用單 AZ 省成本，prod 用 Multi-AZ 保可靠性。這正是 IaC 解決「環境不一致」問題的核心機制。
+核心原則：**同一份 module，不同參數建出不同環境。** dev 與 prod 的 main.tf、variables.tf 完全相同，所有差異都集中在 terraform.tfvars：
+
+| 參數 | dev（成本優先） | prod（可用性優先） |
+|---|---|---|
+| `vpc_cidr` | 10.0.0.0/16 | 10.1.0.0/16（不重疊，未來可互連） |
+| `nat_mode` | instance（1 台 NAT Instance） | gateway（每 AZ 一台 NAT Gateway） |
+| `db_multi_az` | false | true |
+| `db_deletion_protection` | false | true |
+| `db_skip_final_snapshot` | true | false |
+| `db_backup_retention_days` | 1 | 14 |
+| `db_apply_immediately` | true | false（等維護時段，避免營業時間重啟） |
+| `ecs_min_tasks` / `ecs_max_tasks` | 1 / 2 | 2 / 4 |
+
+variables.tf 刻意不給這些參數預設值，每個環境都必須明確寫出自己的選擇，不會不小心沿用別的環境的設定。個人資訊（告警 email）不進版控：本機放在被 .gitignore 排除的 dev.tfvars / prod.tfvars，CI 從 GitHub Secret 帶入。
+
+PR 時 CI 會同時對 dev 與 prod 跑 `terraform plan`，reviewer 一次看到同一個改動在兩個環境各會產生什麼變更。
 
 ### 5.8 認證管理流程
 
@@ -293,11 +307,11 @@ terraform/
 1. Terraform 建立 RDS 時，自動產生初始密碼並寫入 Secrets Manager
 2. ECS Task Definition 中設定從 Secrets Manager 讀取認證資訊
 3. 容器啟動時動態取得 DB 連線資訊，不寫死在 config 或環境變數
-4. Secrets Manager 可設定自動輪換週期（例如 90 天）
+4. （後續強化）啟用 Secrets Manager 自動輪換，例如每 90 天
 5. 所有存取行為都有 CloudTrail audit log
 ```
 
-這個流程確保：密碼不進版控、不寫死在任何地方、可自動輪換、存取可稽核。對應金管會對金融機構的資安要求：「密碼至少每 90 天需更換，未變更密碼帳號應予停用或鎖定」。
+這個流程確保：密碼不進版控、不寫死在任何地方、存取可稽核；下一步啟用自動輪換後，即可滿足定期更換的要求。對應金管會對金融機構的資安要求：「密碼至少每 90 天需更換，未變更密碼帳號應予停用或鎖定」。
 
 ### 5.9 監控告警設計
 

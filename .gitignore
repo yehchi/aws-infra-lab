@@ -6,6 +6,9 @@
 .terraform.lock.hcl
 *.tfvars
 !*.tfvars.example
+# 架構參數（不含個人資訊）要進版控，dev / prod 差異才看得見
+!terraform/environments/*/terraform.tfvars
+!terraform/environments/*/drill.tfvars
 crash.log
 override.tf
 override.tf.json

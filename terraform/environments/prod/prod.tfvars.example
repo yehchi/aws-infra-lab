@@ -1,4 +1,4 @@
 # 本機用：只放不進版控的個人資訊（架構參數在 terraform.tfvars）
-# 使用方式：複製成 dev.tfvars 填入 email，然後 terraform plan -var-file="dev.tfvars"
+# 使用方式：複製成 prod.tfvars 填入 email，然後 terraform plan -var-file="prod.tfvars"
 
 alert_email = "your-email@example.com"
