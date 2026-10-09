@@ -9,9 +9,13 @@
 """
 
 import argparse
+import sys
 import threading
 import time
 import urllib.request
+
+# Windows 終端機（Big5 編碼）印不出部分符號時，以 ? 取代而不是整個程式當掉
+sys.stdout.reconfigure(errors="replace")
 
 
 def worker(url, timeout, stop, stats, lock):

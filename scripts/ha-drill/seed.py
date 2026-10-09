@@ -9,6 +9,7 @@
 import argparse
 import json
 import random
+import sys
 import urllib.request
 
 STOCKS = [
@@ -16,6 +17,9 @@ STOCKS = [
     ("2308", "台達電", 380), ("2881", "富邦金", 85), ("2882", "國泰金", 62),
     ("2412", "中華電", 125), ("2603", "長榮", 190),
 ]
+
+# Windows 終端機（Big5 編碼）印不出部分符號時，以 ? 取代而不是整個程式當掉
+sys.stdout.reconfigure(errors="replace")
 
 
 def main():

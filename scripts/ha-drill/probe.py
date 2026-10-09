@@ -28,6 +28,9 @@ PATHS = {
     "db": "/trades?limit=1",
 }
 
+# Windows 終端機（Big5 編碼）印不出部分符號時，以 ? 取代而不是整個程式當掉
+sys.stdout.reconfigure(errors="replace")
+
 
 def probe_once(url, timeout):
     """打一次請求，回傳 (ok, status, latency_ms, error)"""
