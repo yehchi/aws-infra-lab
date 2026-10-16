@@ -10,13 +10,13 @@
      重跑幾次結果都一樣，失敗時也不會留下半套資料（交易整筆 rollback）。
   2. 可從中斷步驟續跑：每一步只依賴前一步寫進資料庫的結果，不依賴記憶體狀態。
   3. 演練開關放在 SSM Parameter Store，不用改程式或重新部署：
-       /<project>/<env>/batch/fail-step            設成 settlement / clearing / report 即在該步驟模擬失敗
-       /<project>/<env>/batch/report-load-seconds  報表步驟額外對複本施加 N 秒重查詢，模擬大型報表
+       /infra-lab/<env>/batch/fail-step            設成 settlement / clearing / report 即在該步驟模擬失敗
+       /infra-lab/<env>/batch/report-load-seconds  報表步驟額外對複本施加 N 秒重查詢，模擬大型報表
 
 環境變數：
   DB_HOST / DB_READ_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD（由 Secrets Manager 注入）
   TRADE_DATE（YYYY-MM-DD，由 Step Functions 傳入；沒給就用台灣時間的今天）
-  DRILL_PARAM_PREFIX（例如 /aws-infra-lab/dev/batch，沒設定就不讀演練開關）
+  DRILL_PARAM_PREFIX（例如 /infra-lab/dev/batch，沒設定就不讀演練開關）
 """
 
 import asyncio

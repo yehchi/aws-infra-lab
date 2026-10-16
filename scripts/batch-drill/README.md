@@ -20,7 +20,7 @@
 $ENV = "dev"
 $ALB = "http://" + (aws elbv2 describe-load-balancers --names "aws-infra-lab-$ENV-alb" --query "LoadBalancers[0].DNSName" --output text)
 $SM  = aws stepfunctions list-state-machines --query "stateMachines[?name=='aws-infra-lab-$ENV-eod-batch'].stateMachineArn" --output text
-$P   = "/aws-infra-lab/$ENV/batch"
+$P   = "/infra-lab/$ENV/batch"
 curl.exe -s "$ALB/health"          # read_from：dev = primary、prod = replica
 python ha-drill\seed.py $ALB --count 500
 ```

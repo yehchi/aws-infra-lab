@@ -13,8 +13,9 @@
 data "aws_region" "current" {}
 
 locals {
-  name_prefix  = "${var.project_name}-${var.environment}"
-  param_prefix = "/${var.project_name}/${var.environment}/batch"
+  name_prefix = "${var.project_name}-${var.environment}"
+  # SSM 參數名稱不能以 aws / ssm 開頭（AWS 保留字），所以不用 project_name（aws-infra-lab）當前綴
+  param_prefix = "/infra-lab/${var.environment}/batch"
 }
 
 # ----- 演練開關（SSM Parameter Store）-----
