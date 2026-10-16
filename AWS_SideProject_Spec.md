@@ -144,12 +144,17 @@ IaC 工具有三個主要選項，每個都有代價：
     │               （Auto Scaling）                         │
     │                  │ :5432                              │
     │                  ▼                                    │
-    │  Database 層  [ RDS PostgreSQL ]  ← 無任何對外路由     │
-    │                                                       │
+    │  Database 層  [ RDS 主庫 ] ──複寫──► [ Read Replica ]  │
+    │               寫入             查詢、報表（prod）     │
+    │               ← 整層無任何對外路由                    │
     └───────────────────────────────────────────────────────┘
                             │
               [ Secrets Manager ]  [ CloudWatch ]
                   (DB 連線資訊)      (Logs + Alarm)
+
+    收盤後批次：EventBridge Scheduler（14:30）
+      → Step Functions：日終結算 → 交割 → 法規報表
+      → 每一步是一個 ECS 排程任務（同一個 cluster、同一個 image）
 
 完整架構圖（AWS 官方圖示）：docs/architecture.drawio
 ```
@@ -169,6 +174,8 @@ IaC 工具有三個主要選項，每個都有代價：
 | 3 位工程師 80% 時間花在硬體維運 | Fargate + Managed Services | 卓越營運 | 不需管 OS patch、硬碟更換，工程師時間釋放到架構改善 |
 | 基礎架構變更無審查流程 | GitHub PR + Actions CI/CD | 安全性 + 卓越營運 | 變更走 code review 流程，誰改了什麼、為什麼改，全部有紀錄 |
 | 缺乏主動監控與告警 | CloudWatch Logs + Metrics + Alarm | 卓越營運 | 日誌集中收集、設定告警閾值，問題發生前收到通知而不是等使用者報修 |
+| 收盤後批次（結算、交割、報表）要另養批次主機 | EventBridge Scheduler + Step Functions + ECS 排程任務 | 成本最佳化 + 卓越營運 | 重用同一套 cluster 與 image，只為執行時間付費；失敗自動重試、告警，可從中斷步驟續跑 |
+| 結算日報表查詢跟線上交易搶同一台資料庫 | RDS Read Replica 讀寫分離（prod） | 效能效率 | 查詢與報表讀複本、寫入走主庫；實測報表施壓期間複本 CPU 52%、主庫維持 5～10%，下單延遲不變 |
 | NAT Gateway 成本偏高 | NAT Instance 取代 NAT Gateway | 成本最佳化 | 功能相同但月費從 $30-40 降到 ~$5，對非 production 環境是合理取捨 |
 
 ### 5.3 元件清單與設計理由
@@ -182,6 +189,9 @@ IaC 工具有三個主要選項，每個都有代價：
 | **ALB（Application Load Balancer）** | 對外流量入口、健康檢查 | 提供單一進入點、支援健康檢查與後續水平擴展 |
 | **ECS Fargate** | 執行容器化的 API 服務 | 選擇 Fargate 而非 EC2 模式，免除管理底層主機；相較 EKS 學習曲線較平緩且無控制平面費用 |
 | **RDS PostgreSQL** | 資料儲存 | 對應客戶 Oracle → PostgreSQL 的遷移需求，為後續 DMS 遷移演練鋪路 |
+| **RDS Read Replica（prod）** | 查詢與批次報表的讀取端 | 主庫非同步複製；跟 Multi-AZ 的 Standby 不同，Standby 只待命不能讀，Replica 可以分擔讀取 |
+| **Step Functions** | 收盤後批次的流程控制 | 每一步失敗自動重試、停在出錯步驟並告警；STANDARD 型可從中斷處 Redrive、保留 90 天執行紀錄 |
+| **EventBridge Scheduler** | 每個交易日 14:30 觸發批次 | 取代主機上的 crontab，主機掛掉也不會漏跑；支援台灣時區與週一到週五 |
 | **IAM Role** | 服務間權限控管 | 使用 Role 而非硬編 access key，落實最小權限原則 |
 | **Secrets Manager** | 存放資料庫連線資訊 | 避免將帳密寫入程式碼或環境變數；密碼由 Terraform 自動產生，符合企業資安政策 |
 | **CloudWatch** | 日誌收集與告警 | AWS 原生整合、基本功能免費，不需額外建 monitoring 基礎架構 |
@@ -267,7 +277,7 @@ Commit Message 採用 Conventional Commits 規範，格式為 `type(scope): desc
 ```
 terraform/
 ├── bootstrap/            # 建一次、不 destroy：State bucket（S3）、GitHub OIDC Role
-├── modules/              # 共用模組：vpc / security_groups / alb / ecs / rds / cloudwatch
+├── modules/              # 共用模組：vpc / security_groups / alb / ecs / rds / cloudwatch / batch
 └── environments/
     ├── dev/              # 開發環境 — 成本優先
     │   ├── main.tf       # 呼叫 modules（dev / prod 內容完全相同）
@@ -293,6 +303,7 @@ terraform/
 | `db_skip_final_snapshot` | true | false |
 | `db_backup_retention_days` | 1 | 14 |
 | `db_apply_immediately` | true | false（等維護時段，避免營業時間重啟） |
+| `db_read_replica` | false（查詢直接讀主庫） | true（查詢與報表讀複本） |
 | `ecs_min_tasks` / `ecs_max_tasks` | 1 / 2 | 2 / 4 |
 
 variables.tf 刻意不給這些參數預設值，每個環境都必須明確寫出自己的選擇，不會不小心沿用別的環境的設定。個人資訊（告警 email）不進版控：本機放在被 .gitignore 排除的 dev.tfvars / prod.tfvars，CI 從 GitHub Secret 帶入。
@@ -376,10 +387,13 @@ DR 設計的原則是明確定義 RTO/RPO 指標並定期演練，本專案的 D
 
 | Endpoint | Method | 功能 |
 |---|---|---|
-| `/health` | GET | 健康檢查（ALB 用） |
-| `/trades` | GET | 列出交易紀錄（支援依帳號、股票代號、日期範圍篩選） |
-| `/trades` | POST | 新增交易紀錄 |
-| `/trades/{trade_id}` | GET | 查詢單筆交易 |
+| `/health/live` | GET | 存活檢查（ALB 用，不查資料庫） |
+| `/health` | GET | 完整健康檢查（程式＋主庫＋讀取端），回報 `read_from` 為 primary 或 replica |
+| `/trades` | GET | 列出交易紀錄（支援依帳號、股票代號、日期範圍篩選）— 讀複本 |
+| `/trades` | POST | 新增交易紀錄 — 寫主庫 |
+| `/trades/{trade_id}` | GET | 查詢單筆交易 — 讀複本 |
+
+查詢類 API 的回應帶 `X-DB-Read` 標頭（primary / replica），可以直接看出這次讀的是哪一台。
 
 **資料模型（trades 資料表）**
 
@@ -395,6 +409,44 @@ DR 設計的原則是明確定義 RTO/RPO 指標並定期演練，本專案的 D
 | `trade_time` | TIMESTAMP | 交易時間 |
 | `account_id` | VARCHAR | 客戶帳號 |
 | `status` | ENUM | 交易狀態（pending / completed / cancelled） |
+
+### 5.12 收盤後批次作業與讀寫分離
+
+證券商每天收盤後有一段固定的批次：日終結算、交割、法規報表。傳統做法是另外養一台批次主機、用 crontab 排程，一天只用 20 分鐘卻要 24 小時開著；失敗了要人工判斷從哪裡重跑；報表查詢還會跟線上交易搶同一台資料庫。
+
+本專案在同一套架構上擴充（Terraform `batch` module）：
+
+```
+ 每個交易日 14:30（台股 13:30 收盤後一小時）
+ EventBridge Scheduler
+   → Step Functions（STANDARD）
+       ① 日終結算  當日成交依「帳戶 × 股票」彙總         寫主庫
+       ② 交割作業  依帳戶產生 T+2 交割款項（跳過週末）  寫主庫
+       ③ 法規報表  產生當日報表                         讀 Read Replica
+   每一步：ECS 排程任務（跑完即結束），失敗自動重試 1 次
+   重試仍失敗 → 停在該步驟 → EventBridge 規則 → SNS 告警
+```
+
+| 設計 | 解決什麼問題 |
+|---|---|
+| 每一步冪等：先刪當日舊結果、再重新計算寫入 | 重跑幾次結果都一樣，不會重複入帳 |
+| 每一步包在一個資料庫交易裡 | 中途失敗整筆回滾，不會留下半套資料 |
+| 步驟之間只透過資料庫傳結果 | 任何一步都能單獨重跑，才做得到 Redrive |
+| 演練開關放 SSM Parameter Store | 模擬失敗、大型報表不用改程式或重新部署 |
+| 批次任務、狀態機、排程各自最小權限 | 批次出問題，影響範圍限縮在批次本身 |
+| 讀取 endpoint 由 Terraform 寫進 Secrets Manager | 有複本指向複本、沒有就指向主庫，dev / prod 程式碼完全相同 |
+
+**實測結果（2026-10-16）**
+
+| 實驗 | 環境 | 結果 |
+|---|---|---|
+| 正常執行＋排程自動觸發 | dev | 手動與 14:30 排程兩輪結果完全相同（結算 158 筆、交割 20 筆、交割日 T+2 = 10/20）；每步計算 < 1 秒，容器啟動約 1 分鐘 |
+| 中途失敗＋從中斷處續跑 | dev | 交割失敗 → 自動重試 1 次 → 停在交割、報表未執行 → 同一分鐘內收到告警 → Redrive 只重跑交割與報表，結算不重跑 |
+| 批次期間的線上服務 | prod | 報表對複本施壓 5 分鐘：複本 CPU 約 52%、主庫 5～10%；下單與查詢 957 次全部成功，延遲與基準相同（平均約 150 ms） |
+
+演練腳本與操作手冊：`scripts/batch-drill/`。
+
+**取捨與限制**：線上查詢目前與報表讀同一台複本，報表規模再大、吃滿複本 CPU 時查詢會被拖慢，正式環境可再拆一台報表專用複本。複本是非同步複製，「寫完立刻要讀到」的查詢應改走主庫。
 
 ---
 

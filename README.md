@@ -2,6 +2,7 @@
 
 以虛構的中型證券商「IBM 證券」為情境，用 Terraform 在 AWS 上建置一套可上線等級的容器化架構，
 並以 GitHub Actions 管理完整的 IaC 生命週期（plan → apply → 部署 → 演練 → destroy）。
+除了線上 API，也在同一套架構上實作證券商收盤後的批次作業（結算 → 交割 → 報表）與資料庫讀寫分離。
 
 應用程式是一支刻意保持極簡的「交易紀錄查詢 API」（FastAPI），重點在架構設計與每個決策背後的理由。
 設計理念、客戶痛點與技術選型的完整說明見 [AWS_SideProject_Spec.md](AWS_SideProject_Spec.md)。
@@ -17,8 +18,10 @@
                            ECS Fargate（App 層，Auto Scaling）──► NAT ──► 對外（拉 image、呼叫 AWS API）
                                    │ :5432（RDS SG 只收 ECS SG）
                                    ▼
-                           RDS PostgreSQL（Database 層，無任何對外路由）
+                           RDS 主庫（寫入）──複寫──► Read Replica（查詢、報表，prod）
+                           （Database 層，無任何對外路由）
 
+ 收盤後批次：EventBridge Scheduler（14:30）→ Step Functions → ECS 排程任務 ×3（結算 → 交割 → 報表）
  區域服務：ECR（image tag = commit hash）· Secrets Manager（DB 帳密）· CloudWatch → SNS 告警
 ```
 
@@ -29,6 +32,8 @@
 | ALB 只檢查 `/health/live`（不查資料庫） | 資料庫故障切換時，不會連帶讓所有 task 被判定不健康而全部重啟 |
 | Secrets Manager + IAM Role | 密碼由 Terraform 自動產生，不進程式碼、不進版控 |
 | GitHub Actions + OIDC | CI/CD 不存任何長期 Access Key，只信任此 repo 的不可變 ID |
+| Read Replica 讀寫分離（prod） | 查詢與報表讀複本、寫入走主庫，大型報表不拖慢下單 |
+| Step Functions + ECS 排程任務 | 批次不另養主機、只為執行時間付費；失敗自動重試、告警，可從中斷步驟續跑 |
 
 ## 環境
 
@@ -38,13 +43,14 @@ dev 與 prod 呼叫同一份 Terraform module，`main.tf` / `variables.tf` 完�
 |---|---|---|
 | NAT | 1 台 NAT Instance | 每 AZ 一台 NAT Gateway |
 | RDS | Single-AZ | Multi-AZ + 刪除保護 |
+| Read Replica | 無（查詢讀主庫） | 有（查詢與報表讀複本） |
 | ECS task（最少 / 最多） | 1 / 2 | 2 / 4 |
 | 備份保留 | 1 天 | 14 天 |
 
 ```
 terraform/
 ├── bootstrap/          # 建一次、不 destroy：Terraform state（S3）、GitHub OIDC Role
-├── modules/            # vpc / security_groups / alb / ecs / rds / cloudwatch
+├── modules/            # vpc / security_groups / alb / ecs / rds / cloudwatch / batch
 └── environments/
     ├── dev/            # terraform.tfvars = dev 參數
     └── prod/           # terraform.tfvars = prod 參數；drill.tfvars = 演練用覆寫
@@ -66,15 +72,26 @@ terraform/
 |---|---|
 | 停掉一個 ECS task | 1,050 次請求 0 失敗；53 秒自動補回 |
 | RDS Multi-AZ 強制故障切換 | 資料庫中斷 12.7 秒；`/health/live` 全程 100%，ECS 未重啟任何 task |
-| 壓力測試 | 伺服器端 CPU 約 10%、瓶頸在用戶端，Auto Scaling 正確判斷不擴展 |
+| 壓力測試 | 平均 CPU 從未連續 3 分鐘超過 50%、瓶頸在用戶端，Auto Scaling 正確判斷不擴展 |
+
+## 收盤後批次演練
+
+腳本與操作手冊：[scripts/batch-drill/](scripts/batch-drill/)
+
+| 實驗 | 實測結果 |
+|---|---|
+| 正常執行＋排程自動觸發（dev） | 手動與 14:30 排程兩輪結果完全相同（冪等）；交割日正確算到 T+2 |
+| 中途失敗＋從中斷處續跑（dev） | 自動重試 → 停在失敗步驟 → 同一分鐘內告警 → Redrive 只重跑失敗之後的步驟 |
+| 批次期間的線上服務（prod） | 報表施壓 5 分鐘：複本 CPU 約 52%、主庫 5～10%；下單與查詢 957 次全部成功，延遲不變 |
 
 ## 專案結構
 
 ```
-├── app/                 # FastAPI 交易紀錄查詢服務 + Dockerfile
+├── app/                 # FastAPI 交易紀錄查詢服務 + 收盤後批次（batch/）+ Dockerfile
 ├── terraform/           # 見上方「環境」
 ├── .github/workflows/   # pr-check / deploy / destroy
 ├── scripts/ha-drill/    # 高可用演練腳本（probe / load / seed / watch）
+├── scripts/batch-drill/ # 收盤後批次演練手冊
 ├── docs/                # 架構圖
 └── AWS_SideProject_Spec.md
 ```
