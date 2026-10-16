@@ -15,6 +15,7 @@ HA 演練探測器 — 持續打 API，記錄每次成功 / 失敗，結束時�
 
 import argparse
 import csv
+import json
 import signal
 import sys
 import threading
@@ -32,14 +33,22 @@ PATHS = {
 sys.stdout.reconfigure(errors="replace")
 
 
-def probe_once(url, timeout):
-    """打一次請求，回傳 (ok, status, latency_ms, error)"""
+# --write 時額外探測的寫入路徑：每次新增一筆小交易（寫主庫），量測下單是否受影響
+WRITE_PATH = "/trades"
+WRITE_BODY = json.dumps({"stock_symbol": "0050", "stock_name": "元大台灣50", "trade_type": "BUY",
+                         "quantity": 1, "price": 100.0, "account_id": "PROBE-001"}).encode()
+
+
+def probe_once(url, timeout, body=None):
+    """打一次請求，回傳 (ok, status, latency_ms, error)；body 不為 None 時送 POST"""
     start = time.monotonic()
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        req = urllib.request.Request(url, data=body, method="POST" if body else "GET",
+                                     headers={"Content-Type": "application/json"} if body else {})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp.read()
             ms = (time.monotonic() - start) * 1000
-            return resp.status == 200, resp.status, ms, ""
+            return resp.status in (200, 201), resp.status, ms, ""
     except urllib.error.HTTPError as e:
         ms = (time.monotonic() - start) * 1000
         return False, e.code, ms, f"HTTP {e.code}"
@@ -60,10 +69,12 @@ class Tracker:
         self._cur_fails = 0
         self._cur_errors = set()
         self.max_ms = 0.0
+        self.latencies = []  # 成功請求的延遲，算平均與 p95
 
     def record(self, ts, ok, ms, err):
         self.max_ms = max(self.max_ms, ms)
         if ok:
+            self.latencies.append(ms)
             self.ok += 1
             if self._cur_start is not None:
                 self.outages.append((self._cur_start, ts, self._cur_fails, sorted(self._cur_errors)))
@@ -90,16 +101,18 @@ def main():
     ap.add_argument("--interval", type=float, default=0.5, help="探測間隔秒數（預設 0.5）")
     ap.add_argument("--timeout", type=float, default=3.0, help="單次請求逾時秒數（預設 3）")
     ap.add_argument("--log", default="probe.csv", help="逐筆紀錄輸出檔（預設 probe.csv）")
+    ap.add_argument("--write", action="store_true", help="同時探測寫入路徑（POST /trades，寫主庫）")
     args = ap.parse_args()
 
     base = args.base_url.rstrip("/")
-    trackers = {k: Tracker(k) for k in PATHS}
+    paths = dict(PATHS, write=WRITE_PATH) if args.write else dict(PATHS)
+    trackers = {k: Tracker(k) for k in paths}
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
 
     started = time.time()
     print(f"開始探測 {base}（每 {args.interval}s，逾時 {args.timeout}s）— Ctrl+C 結束")
-    print("時間          live   db     db延遲")
+    print("時間          " + "   ".join(paths) + "     db延遲")
 
     with open(args.log, "w", newline="") as f:
         w = csv.writer(f)
@@ -107,8 +120,8 @@ def main():
         while not stop.is_set():
             tick = time.time()
             line = [fmt(tick)]
-            for key, path in PATHS.items():
-                ok, status, ms, err = probe_once(base + path, args.timeout)
+            for key, path in paths.items():
+                ok, status, ms, err = probe_once(base + path, args.timeout, WRITE_BODY if key == "write" else None)
                 trackers[key].record(tick, ok, ms, err)
                 w.writerow([f"{tick:.3f}", path, int(ok), status, f"{ms:.0f}", err])
                 line.append(("OK " if ok else "FAIL") + "  ")
@@ -128,8 +141,12 @@ def main():
     for key, t in trackers.items():
         total = t.ok + t.fail
         rate = 100.0 * t.ok / total if total else 0
-        print(f"\n[{key}] {PATHS[key]}")
+        print(f"\n[{key}] {paths[key]}")
         print(f"  成功 {t.ok} / 失敗 {t.fail}（可用率 {rate:.2f}%）· 最慢一次 {t.max_ms:.0f} ms")
+        if t.latencies:
+            lat = sorted(t.latencies)
+            p95 = lat[min(len(lat) - 1, int(len(lat) * 0.95))]
+            print(f"  延遲：平均 {sum(lat) / len(lat):.0f} ms · 中位數 {lat[len(lat) // 2]:.0f} ms · p95 {p95:.0f} ms")
         if not t.outages:
             print("  中斷區間：無 ✅")
         for s, e, n, errs in t.outages:

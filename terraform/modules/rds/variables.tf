@@ -68,6 +68,12 @@ variable "apply_immediately" {
   default     = true
 }
 
+variable "create_read_replica" {
+  description = "是否建立 Read Replica（讀寫分離：查詢與批次報表讀複本）"
+  type        = bool
+  default     = false
+}
+
 variable "secret_recovery_window_days" {
   description = "Secret 刪除後的復原等待期（0 = 立即刪除；正式環境建議 7-30 天）"
   type        = number

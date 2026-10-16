@@ -38,6 +38,9 @@ resource "aws_secretsmanager_secret_version" "db_credentials" {
     host     = aws_db_instance.main.address
     port     = 5432
     dbname   = var.db_name
+    # 讀取用 endpoint：有 Read Replica 就指向複本，沒有就指向主庫
+    # 應用程式一律讀這個值，dev / prod 程式碼完全相同
+    read_host = var.create_read_replica ? aws_db_instance.replica[0].address : aws_db_instance.main.address
   })
 }
 
@@ -94,5 +97,31 @@ resource "aws_db_instance" "main" {
 
   tags = {
     Name = "${local.name_prefix}-db"
+  }
+}
+
+# ----- Read Replica（讀寫分離）-----
+# 主庫非同步複製到這台唯讀複本：查詢與批次報表讀這裡，寫入仍走主庫
+# 跟 Multi-AZ 的 Standby 不同：Standby 只待命、不能讀；Replica 可以分擔讀取
+resource "aws_db_instance" "replica" {
+  count = var.create_read_replica ? 1 : 0
+
+  identifier          = "${local.name_prefix}-db-replica"
+  replicate_source_db = aws_db_instance.main.identifier # 同區域複本：subnet group 與加密設定沿用主庫
+  instance_class      = var.db_instance_class
+  storage_type        = "gp3"
+  storage_encrypted   = true
+
+  vpc_security_group_ids = [var.rds_sg_id]
+  publicly_accessible    = false
+
+  multi_az                = false # 複本本身不做 Multi-AZ；主庫已有 Standby
+  backup_retention_period = 0     # 複本不另外備份
+  apply_immediately       = true
+  deletion_protection     = var.deletion_protection
+  skip_final_snapshot     = true
+
+  tags = {
+    Name = "${local.name_prefix}-db-replica"
   }
 }

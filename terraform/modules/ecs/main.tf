@@ -164,6 +164,11 @@ resource "aws_ecs_task_definition" "app" {
         {
           name      = "DB_PASSWORD"
           valueFrom = "${var.db_secret_arn}:password::"
+        },
+        {
+          # 讀取用 endpoint（prod 指向 Read Replica；dev 沒有複本則與 DB_HOST 相同）
+          name      = "DB_READ_HOST"
+          valueFrom = "${var.db_secret_arn}:read_host::"
         }
       ]
 

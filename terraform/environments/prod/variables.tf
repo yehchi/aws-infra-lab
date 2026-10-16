@@ -96,6 +96,12 @@ variable "db_apply_immediately" {
   type        = bool
 }
 
+variable "db_read_replica" {
+  description = "是否建立 Read Replica（讀寫分離：查詢與批次報表讀複本）"
+  type        = bool
+  default     = false
+}
+
 variable "secret_recovery_window_days" {
   description = "Secret 刪除後的復原等待期（天）"
   type        = number
@@ -116,6 +122,13 @@ variable "ecs_cpu_target_percent" {
   description = "Auto Scaling 目標 CPU 使用率（%）"
   type        = number
   default     = 50
+}
+
+# ----- 收盤後批次 -----
+variable "batch_schedule_enabled" {
+  description = "是否啟用收盤後批次的自動排程（false = 只能手動執行）"
+  type        = bool
+  default     = true
 }
 
 # ----- 告警 -----

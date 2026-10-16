@@ -13,8 +13,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 複製應用程式
+# 複製應用程式（線上 API ＋ 收盤後批次，共用同一個 image）
 COPY main.py .
+COPY batch/ batch/
 
 # 開放 port 8000（FastAPI 預設）
 EXPOSE 8000
