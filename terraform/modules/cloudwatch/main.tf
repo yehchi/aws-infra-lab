@@ -13,6 +13,23 @@ resource "aws_sns_topic" "alerts" {
   }
 }
 
+# Topic 存取政策：允許 CloudWatch 告警與 EventBridge（批次失敗通知）發送訊息
+# 同帳號的管理權限由 IAM 身分政策控制，這裡只需開放兩個 AWS 服務
+resource "aws_sns_topic_policy" "alerts" {
+  arn = aws_sns_topic.alerts.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowAwsServicesPublish"
+      Effect    = "Allow"
+      Principal = { Service = ["cloudwatch.amazonaws.com", "events.amazonaws.com"] }
+      Action    = "sns:Publish"
+      Resource  = aws_sns_topic.alerts.arn
+    }]
+  })
+}
+
 # 訂閱 Email 通知（需要到信箱點確認連結才會生效）
 resource "aws_sns_topic_subscription" "email" {
   topic_arn = aws_sns_topic.alerts.arn

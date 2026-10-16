@@ -48,6 +48,7 @@ env:
   ECR_REPO: aws-infra-lab-${{ inputs.environment || 'dev' }}-app
   ECS_CLUSTER: aws-infra-lab-${{ inputs.environment || 'dev' }}-cluster
   ECS_SERVICE: aws-infra-lab-${{ inputs.environment || 'dev' }}-app-service
+  TASK_FAMILY: aws-infra-lab-${{ inputs.environment || 'dev' }}-app
   ALB_NAME: aws-infra-lab-${{ inputs.environment || 'dev' }}-alb
 
 # 同一個環境同一時間只允許一個部署 / 銷毀在跑，避免兩次 apply 互相打架
@@ -112,9 +113,12 @@ jobs:
 
       - name: ECS 重新部署
         run: |
+          # 指定 task definition family（不帶版本號）= 用 Terraform 最新註冊的版本
+          # 這樣 Terraform 新增的環境變數 / secret（例如 DB_READ_HOST）才會套用到線上容器
           aws ecs update-service \
             --cluster "$ECS_CLUSTER" \
             --service "$ECS_SERVICE" \
+            --task-definition "$TASK_FAMILY" \
             --force-new-deployment > /dev/null
           echo "等待 ECS service 穩定（最多約 10 分鐘）..."
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"

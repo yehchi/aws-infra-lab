@@ -55,6 +55,7 @@ module "rds" {
   skip_final_snapshot         = var.db_skip_final_snapshot
   backup_retention_days       = var.db_backup_retention_days
   apply_immediately           = var.db_apply_immediately
+  create_read_replica         = var.db_read_replica
   secret_recovery_window_days = var.secret_recovery_window_days
 }
 
@@ -84,4 +85,21 @@ module "cloudwatch" {
   ecs_service_name = module.ecs.service_name
   alb_arn_suffix   = module.alb.alb_arn_suffix
   rds_instance_id  = module.rds.db_instance_id
+}
+
+# ----- 收盤後批次：Scheduler → Step Functions → ECS 排程任務 -----
+module "batch" {
+  source = "../../modules/batch"
+
+  project_name            = var.project_name
+  environment             = var.environment
+  cluster_arn             = module.ecs.cluster_arn
+  app_subnet_ids          = module.vpc.app_subnet_ids
+  ecs_sg_id               = module.security_groups.ecs_sg_id
+  ecr_repository_url      = module.ecs.ecr_repository_url
+  task_execution_role_arn = module.ecs.task_execution_role_arn
+  log_group_name          = module.ecs.log_group_name
+  db_secret_arn           = module.rds.secret_arn
+  sns_topic_arn           = module.cloudwatch.sns_topic_arn
+  schedule_enabled        = var.batch_schedule_enabled
 }

@@ -20,7 +20,8 @@ db_deletion_protection      = false # 允許隨時 destroy
 db_skip_final_snapshot      = true  # destroy 時不留快照
 db_backup_retention_days    = 1
 db_apply_immediately        = true
-secret_recovery_window_days = 0 # 可立即刪除重建
+secret_recovery_window_days = 0     # 可立即刪除重建
+db_read_replica             = false # 不建複本省錢，查詢直接讀主庫（程式碼相同）
 
 # ----- ECS -----
 ecs_min_tasks = 1

@@ -46,3 +46,18 @@ output "ecs_service_name" {
   description = "ECS Service 名稱"
   value       = module.ecs.service_name
 }
+
+output "db_read_endpoint" {
+  description = "讀取用 endpoint（prod 指向 Read Replica；dev 與主庫相同）"
+  value       = module.rds.read_endpoint
+}
+
+output "batch_state_machine_arn" {
+  description = "收盤後批次 Step Functions ARN"
+  value       = module.batch.state_machine_arn
+}
+
+output "batch_drill_param_prefix" {
+  description = "批次演練開關的 SSM 參數路徑前綴"
+  value       = module.batch.drill_param_prefix
+}

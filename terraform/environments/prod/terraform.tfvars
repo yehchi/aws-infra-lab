@@ -24,6 +24,7 @@ db_skip_final_snapshot      = false # 刪除前保留最後一份快照
 db_backup_retention_days    = 14
 db_apply_immediately        = false # 設定變更等到維護時段才套用，避免營業時間重啟
 secret_recovery_window_days = 7
+db_read_replica             = true # 讀寫分離：查詢與批次報表讀複本，不跟寫入搶主庫
 
 # ----- ECS -----
 ecs_min_tasks = 2 # 至少 2 個 task，分散在兩個 AZ

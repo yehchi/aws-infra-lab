@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 import asyncpg
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 # ----- App 設定 -----
@@ -19,24 +19,45 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# ----- 資料庫連線池 -----
+# ----- 資料庫連線池（讀寫分離）-----
+# 寫入走主庫（DB_HOST）；查詢走讀取 endpoint（DB_READ_HOST）
+# prod 的 DB_READ_HOST 指向 Read Replica；dev 沒有複本，兩者相同 → 共用同一個連線池
 db_pool = None
+read_pool = None
+
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+DB_READ_HOST = os.environ.get("DB_READ_HOST") or DB_HOST
+READ_FROM = "replica" if DB_READ_HOST != DB_HOST else "primary"
+
+
+async def _create_pool(host):
+    return await asyncpg.create_pool(
+        host=host,
+        port=int(os.environ.get("DB_PORT", "5432")),
+        database=os.environ.get("DB_NAME", "appdb"),
+        user=os.environ.get("DB_USER", "dbadmin"),
+        password=os.environ.get("DB_PASSWORD", ""),
+        min_size=2,
+        max_size=10,
+    )
 
 
 async def get_db_pool():
-    """取得資料庫連線池，從環境變數讀取連線資訊（由 Secrets Manager 注入）"""
+    """主庫連線池（寫入、建表），連線資訊由 Secrets Manager 注入"""
     global db_pool
     if db_pool is None:
-        db_pool = await asyncpg.create_pool(
-            host=os.environ.get("DB_HOST", "localhost"),
-            port=int(os.environ.get("DB_PORT", "5432")),
-            database=os.environ.get("DB_NAME", "appdb"),
-            user=os.environ.get("DB_USER", "dbadmin"),
-            password=os.environ.get("DB_PASSWORD", ""),
-            min_size=2,
-            max_size=10,
-        )
+        db_pool = await _create_pool(DB_HOST)
     return db_pool
+
+
+async def get_read_pool():
+    """讀取連線池：有 Read Replica 就連複本，否則直接用主庫的連線池"""
+    global read_pool
+    if READ_FROM == "primary":
+        return await get_db_pool()
+    if read_pool is None:
+        read_pool = await _create_pool(DB_READ_HOST)
+    return read_pool
 
 
 # ----- 啟動時建立資料表 -----
@@ -68,7 +89,8 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    global db_pool
+    if read_pool:
+        await read_pool.close()
     if db_pool:
         await db_pool.close()
 
@@ -136,21 +158,31 @@ async def health_check():
         pool = await get_db_pool()
         async with pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
-        return {"status": "healthy", "service": "IBM Securities Trade API", "timestamp": datetime.utcnow()}
+        rpool = await get_read_pool()
+        async with rpool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return {
+            "status": "healthy",
+            "service": "IBM Securities Trade API",
+            "read_from": READ_FROM,
+            "timestamp": datetime.utcnow(),
+        }
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Database connection failed: {str(e)}")
 
 
 @app.get("/trades", response_model=list[TradeResponse])
 async def list_trades(
+    response: Response,
     account_id: Optional[str] = Query(None, description="依客戶帳號篩選"),
     stock_symbol: Optional[str] = Query(None, description="依股票代號篩選"),
     start_date: Optional[str] = Query(None, description="開始日期 (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="結束日期 (YYYY-MM-DD)"),
     limit: int = Query(50, ge=1, le=200, description="回傳筆數上限"),
 ):
-    """列出交易紀錄（支援篩選）"""
-    pool = await get_db_pool()
+    """列出交易紀錄（支援篩選）— 查詢走讀取連線池"""
+    pool = await get_read_pool()
+    response.headers["X-DB-Read"] = READ_FROM  # 讓呼叫端看得出這次查詢讀的是主庫還是複本
 
     query = "SELECT * FROM trades WHERE 1=1"
     params = []
@@ -211,9 +243,14 @@ async def create_trade(trade: TradeCreate):
 
 
 @app.get("/trades/{trade_id}", response_model=TradeResponse)
-async def get_trade(trade_id: str):
-    """查詢單筆交易"""
-    pool = await get_db_pool()
+async def get_trade(trade_id: str, response: Response):
+    """查詢單筆交易 — 查詢走讀取連線池
+
+    注意：複本是非同步複製，剛寫入的資料可能有毫秒級延遲才查得到。
+    交易查詢服務可以接受；若業務要求「寫完立刻讀到」，該查詢應改走主庫。
+    """
+    pool = await get_read_pool()
+    response.headers["X-DB-Read"] = READ_FROM
 
     try:
         trade_uuid = uuid.UUID(trade_id)
