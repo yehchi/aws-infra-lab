@@ -1,5 +1,5 @@
 # ============================================================
-# IBM 證券 — 交易紀錄查詢服務
+# 翰寧證券 — 交易紀錄查詢服務
 # FastAPI + PostgreSQL (via Secrets Manager)
 # ============================================================
 
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 # ----- App 設定 -----
 app = FastAPI(
-    title="IBM 證券交易紀錄查詢服務",
+    title="翰寧證券交易紀錄查詢服務",
     description="交易紀錄的新增、查詢、篩選 API",
     version="1.0.0",
 )
@@ -163,7 +163,7 @@ async def health_check():
             await conn.fetchval("SELECT 1")
         return {
             "status": "healthy",
-            "service": "IBM Securities Trade API",
+            "service": "Hanning Securities Trade API",
             "read_from": READ_FROM,
             "timestamp": datetime.utcnow(),
         }
