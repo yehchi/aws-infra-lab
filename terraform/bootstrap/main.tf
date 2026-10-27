@@ -126,7 +126,7 @@ resource "aws_iam_role" "github_actions" {
 }
 
 # 權限：Terraform 要建 VPC、IAM Role、RDS... 範圍很廣
-# Lab 環境先給 AdministratorAccess，靠上面的「信任條件」限制只有這個 repo 能用
+# 練習環境先給 AdministratorAccess，靠上面的「信任條件」限制只有這個 repo 能用
 # Production 應改為依實際需要的服務收斂權限（最小權限原則）
 resource "aws_iam_role_policy_attachment" "github_actions_admin" {
   role       = aws_iam_role.github_actions.name

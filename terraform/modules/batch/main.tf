@@ -161,7 +161,7 @@ locals {
   }
 
   definition = {
-    Comment = "IBM 證券收盤後批次：日終結算 → 交割作業 → 法規報表"
+    Comment = "翰寧證券收盤後批次：日終結算 → 交割作業 → 法規報表"
     StartAt = "CheckTradeDate"
     States = merge({
       # 排程觸發時沒有帶日期 → 用執行開始時間的日期（收盤後 14:30 台灣 = 06:30 UTC，同一天）
